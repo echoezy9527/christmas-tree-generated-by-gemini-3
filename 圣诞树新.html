@@ -86,13 +86,33 @@
 
         #init-btn { display: none; margin-top: 30px; }
 
-        /* Webcam hidden */
+        /* Webcam live preview */
         #webcam-wrapper {
-            position: absolute; bottom: 20px; right: 20px; width: 100px; height: 75px;
+            position: absolute; bottom: 20px; right: 20px; width: 160px; height: 120px;
             opacity: 0; pointer-events: none; z-index: 50;
-            border: 1px solid rgba(255,255,255,0.2);
+            border: 2px solid rgba(212, 175, 55, 0.6);
             transition: opacity 0.5s;
-            border-radius: 4px; overflow: hidden;
+            border-radius: 8px; overflow: hidden;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+            background: #000;
+        }
+        #webcam-wrapper::before {
+            content: '📹 LIVE';
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            font-size: 9px;
+            color: #d4af37;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 2px 6px;
+            border-radius: 3px;
+            letter-spacing: 1px;
+            z-index: 1;
+            pointer-events: none;
+        }
+        #webcam-preview {
+            width: 100%; height: 100%;
+            object-fit: cover;
         }
 
         .spinner { width: 40px; height: 40px; border: 2px solid rgba(212, 175, 55, 0.2); border-top: 2px solid #d4af37; border-radius: 50%; animation: spin 1s infinite linear; margin-bottom: 20px; }
@@ -274,7 +294,7 @@
                 // Activate interaction logic in 3D module
                 if(window.activateInteraction) window.activateInteraction();
                 // Show Webcam box if enabled
-                if(isCameraReady) document.getElementById('webcam-wrapper').style.opacity = 0.5;
+                if(isCameraReady) document.getElementById('webcam-wrapper').style.opacity = 1;
             }, 800);
         }
 
@@ -602,41 +622,91 @@
         async function predictWebcam() {
             if (video.currentTime !== lastVideoTime) {
                 lastVideoTime = video.currentTime;
+                
+                // Draw video frame to canvas for preview
+                if (webcamCtx && video.videoWidth > 0) {
+                    webcamCtx.save();
+                    webcamCtx.clearRect(0, 0, webcamCanvas.width, webcamCanvas.height);
+                    // Mirror the video horizontally for natural interaction
+                    webcamCtx.translate(webcamCanvas.width, 0);
+                    webcamCtx.scale(-1, 1);
+                    webcamCtx.drawImage(video, 0, 0, webcamCanvas.width, webcamCanvas.height);
+                    webcamCtx.restore();
+                }
+                
                 if (handLandmarker) {
                     const result = handLandmarker.detectForVideo(video, performance.now());
                     if (result.landmarks.length > 0) {
-                        // FIXED: Check enable flag
-                        if (!STATE.interactionEnabled) return;
-
                         STATE.hand.detected = true;
                         const lm = result.landmarks[0];
-                        const wrist = lm[0];
-                        const tips = [lm[8], lm[12], lm[16], lm[20]];
-                        let avgDist = 0; tips.forEach(t => avgDist += Math.hypot(t.x-wrist.x, t.y-wrist.y));
-                        avgDist /= 4;
-                        const pinchDist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
-                        
-                        if (STATE.mode === 'FOCUS') {
-                            // Sticky exit
-                            if (pinchDist > 0.08) {
-                                changeState('SCATTER'); 
-                            }
-                        } else {
-                            if (pinchDist < 0.05) {
-                                // FIXED: Strict Sequential Logic
-                                const photos = particleSystem.filter(p => p.type === 'PHOTO');
-                                if (photos.length > 0) {
-                                    STATE.mode = 'FOCUS';
-                                    STATE.photoIndex = (STATE.photoIndex + 1) % photos.length;
-                                    STATE.focusTarget = photos[STATE.photoIndex].mesh;
+                        // Always update hand position for rotation control
+                        STATE.hand.x = (lm[9].x - 0.5) * 2; 
+                        STATE.hand.y = (lm[9].y - 0.5) * 2;
+
+                        // Draw hand landmarks on canvas
+                        if (webcamCtx) {
+                            webcamCtx.save();
+                            webcamCtx.translate(webcamCanvas.width, 0);
+                            webcamCtx.scale(-1, 1);
+                            
+                            // Draw hand skeleton
+                            webcamCtx.strokeStyle = 'rgba(212, 175, 55, 0.8)';
+                            webcamCtx.lineWidth = 2;
+                            const connections = [
+                                [0,1],[1,2],[2,3],[3,4],  // thumb
+                                [0,5],[5,6],[6,7],[7,8],  // index
+                                [0,9],[9,10],[10,11],[11,12],  // middle
+                                [0,13],[13,14],[14,15],[15,16], // ring
+                                [0,17],[17,18],[18,19],[19,20]  // pinky
+                            ];
+                            connections.forEach(([a,b]) => {
+                                webcamCtx.beginPath();
+                                webcamCtx.moveTo(lm[a].x * webcamCanvas.width, lm[a].y * webcamCanvas.height);
+                                webcamCtx.lineTo(lm[b].x * webcamCanvas.width, lm[b].y * webcamCanvas.height);
+                                webcamCtx.stroke();
+                            });
+                            
+                            // Draw landmarks
+                            webcamCtx.fillStyle = 'rgba(255, 215, 0, 0.9)';
+                            lm.forEach(point => {
+                                webcamCtx.beginPath();
+                                webcamCtx.arc(point.x * webcamCanvas.width, point.y * webcamCanvas.height, 3, 0, Math.PI * 2);
+                                webcamCtx.fill();
+                            });
+                            
+                            webcamCtx.restore();
+                        }
+
+                        // Only process gestures if interaction is enabled
+                        if (STATE.interactionEnabled) {
+                            const wrist = lm[0];
+                            const tips = [lm[8], lm[12], lm[16], lm[20]];
+                            let avgDist = 0; 
+                            tips.forEach(t => avgDist += Math.hypot(t.x-wrist.x, t.y-wrist.y));
+                            avgDist /= 4;
+                            const pinchDist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                            
+                            if (STATE.mode === 'FOCUS') {
+                                // Sticky exit
+                                if (pinchDist > 0.08) {
+                                    changeState('SCATTER'); 
                                 }
-                            } else if (avgDist < 0.25) {
-                                changeState('TREE');
-                            } else if (avgDist > 0.4) {
-                                changeState('SCATTER');
+                            } else {
+                                if (pinchDist < 0.05) {
+                                    // Strict Sequential Logic
+                                    const photos = particleSystem.filter(p => p.type === 'PHOTO');
+                                    if (photos.length > 0) {
+                                        STATE.mode = 'FOCUS';
+                                        STATE.photoIndex = (STATE.photoIndex + 1) % photos.length;
+                                        STATE.focusTarget = photos[STATE.photoIndex].mesh;
+                                    }
+                                } else if (avgDist < 0.25) {
+                                    changeState('TREE');
+                                } else if (avgDist > 0.4) {
+                                    changeState('SCATTER');
+                                }
                             }
                         }
-                        STATE.hand.x = (lm[9].x - 0.5) * 2; STATE.hand.y = (lm[9].y - 0.5) * 2;
                     } else {
                         STATE.hand.detected = false;
                     }
